@@ -14,7 +14,7 @@ Research about unexpected panics and weird drawings of `x/image/vector`'s `Draw`
   7. [OverflowX](#7-overflowx)
 - [When these happens](#when-these-happens)
 - [Why these happens](#why-these-happens)
-- [Possible fix](#possible-fix)
+- [A Way to fix](#a-way-to-fix)
 
 ## Test cases:
 
@@ -143,6 +143,62 @@ A few issues could happen with this in different cases.
 
    Test cases: [Overflow](#5-overflow), [OverflowY](#6-overflowy)
 
-## Possible fix
+## A Way to fix
 
-TODO
+![Drawing](./ways-to-fix.png)
+
+There are three cases that cause different issues, but they all could be fixed with a theoretically easy fix without losing that much of the performance we've had. Limiting the `r`'s bounds to the `dst`'s bounds!
+
+Here's a temporarily patch I wrote:
+
+```go
+func (z *Rasterizer) rasterizeDstRGBASrcUniformOpOver(dst *image.RGBA, r image.Rectangle, sr, sg, sb, sa uint32) {
+	z.accumulateMask()
+
+	// NEW: Calculate the offsets between dst's Min and r's Min; The goal is to
+	// start drawing from the dst's Min.
+	var xOffset, yOffset, pixOffset int
+	if r.Min.X < dst.Rect.Min.X {
+		xOffset = dst.Rect.Min.X - r.Min.X
+	}
+	if r.Min.Y < dst.Rect.Min.Y {
+		yOffset = dst.Rect.Min.Y - r.Min.Y
+	}
+
+	// NEW: Calculate the maximum X and Y. Basically, limit the r's Max to the dst's Max.
+	xMax, yMax := r.Max.X, r.Max.Y
+	if xMax > dst.Rect.Max.X {
+		xMax = dst.Rect.Max.X
+	}
+	if yMax > dst.Rect.Max.Y {
+		yMax = dst.Rect.Max.Y
+	}
+
+	// CHANGED: Removed dst.Pix[...] and just kept this. You'll find more details down bellow.
+	pixOffset = dst.PixOffset(r.Min.X, r.Min.Y)
+
+	// CHANGED: Start x and y from the calculated offset.
+	// CHANGED: Using yMax and xMax instead of r.Min.X and r.Min.Y for y1 and x1.
+	for y, y1 := yOffset, yMax-r.Min.Y; y < y1; y++ {
+		for x, x1 := xOffset, xMax-r.Min.X; x < x1; x++ {
+			ma := z.bufU32[y*z.size.X+x]
+
+			// This formula is like rasterizeOpOver's, simplified for the
+			// concrete dst type and uniform src assumption.
+			a := 0xffff - (sa * ma / 0xffff)
+			i := pixOffset + y*dst.Stride + 4*x // CHANGED: added pixOffset
+
+			// CHANGED: We can't pre-calculate the pix as it could be negative
+			// ore more than the dst's pixels. So I just used it directly here.
+			dst.Pix[i+0] = uint8(((uint32(dst.Pix[i+0])*0x101*a + sr*ma) / 0xffff) >> 8)
+			dst.Pix[i+1] = uint8(((uint32(dst.Pix[i+1])*0x101*a + sg*ma) / 0xffff) >> 8)
+			dst.Pix[i+2] = uint8(((uint32(dst.Pix[i+2])*0x101*a + sb*ma) / 0xffff) >> 8)
+			dst.Pix[i+3] = uint8(((uint32(dst.Pix[i+3])*0x101*a + sa*ma) / 0xffff) >> 8)
+		}
+	}
+}
+```
+
+Note 1: Of course, it's not something that you would like to see in a standard library's code, but see it as one of many ways of fixing the error.
+
+Note 2: This code only fixes `image.RGBA` when `DrawOP` is `draw.Over`. Zero research on `image.Alpha` and `draw.Src` happened.
