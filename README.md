@@ -1,6 +1,6 @@
 # Experiment the x/image/vector's invalid memory accesses.
 
-Research about unexpected panics and weird drawings of `x/image/vector`'s `Draw` methods.
+Research about unexpected panics and invalid drawings of the `x/image/vector`'s `Draw` method.
 
 ## Table of content
 
@@ -92,15 +92,15 @@ Drawing a 25x25px vector at a higher X position (eg: 35x15) than a 50x50px image
 
 These issues will only happen if your src image is an `image.Uniform` and your dst image is one of `image.RGBA` or `image.RGBA`.
 
-They will still draw normally if your `r`'s (second Draw method's parameter) `Min` and `Max` are within the dst's range. But things start to happen if `r` isn't  in the `dst`'s range, as you can see in the [test cases](#test-cases).
+They will still draw normally if your `r`'s (second Draw method's parameter) `Min` and `Max` are within the `dst`'s range. But things start to happen if `r` isn't in the `dst`'s range, as you can see in the [test cases](#test-cases).
 
 ## Why these happens?
 
 Both `image.RGBA` as `image.Alpha` have their own specific implementations for `image.Uniform` images as source. You can find them [here](https://cs.opensource.google/go/x/image/+/master:vector/vector.go;l=272;drc=cff245a6509b8c4de022d0d5b9037c503c5989d6).
 
-I've done all of my researches over `image.RGBA`, so here's a detailed description. (most of the thing are same for `image.Alpha` too)
+I've done all of my researches over `image.RGBA`, so here's a detailed description. (The same goes for `image.Alpha` too)
 
-When we call the `Draw` method with an `image.RGBA` as dst and an `image.Uniform` as src, if we assume your `DrawOp` is `draw.Over`, it will draw the vector with the `rasterizeDstRGBASrcUniformOpOver` method. (which is usually `rasterizeOpOver` for other image types.) And this method does not depend on what `image.RGBA` actually provides; it will access and write the pixels manually by itself. Here's its code at the time of writing this:
+When we call the `Draw` method with an `image.RGBA` as dst and an `image.Uniform` as src, if we assume your `DrawOp` is `draw.Over`, it will draw the vector using `rasterizeDstRGBASrcUniformOpOver` method. (which is usually `rasterizeOpOver` for other image types.) And this method does not depend on what `image.RGBA` actually provides; it will access and write the pixels manually by itself. Here's its code at the time of writing this:
 
 ```go
 func (z *Rasterizer) rasterizeDstRGBASrcUniformOpOver(dst *image.RGBA, r image.Rectangle, sr, sg, sb, sa uint32) {
@@ -125,21 +125,21 @@ func (z *Rasterizer) rasterizeDstRGBASrcUniformOpOver(dst *image.RGBA, r image.R
 
 A few issues could happen with this in different cases.
 
-1. When you pass a smaller `r.Min` than `dst`'s Min.
+1. When you pass a smaller `r.Min` than `dst.Min`.
 
-   At this moment, it tried to access the Pix array with a negative number gathered from `dst.PixOffset`, and as you already know, you can't access an array with a negative index.
+   At this moment, it tries to access `dst.Pix` items with a negative number gathered from `dst.PixOffset`, and as you already know, you can't access an array with a negative index.
 
    Test cases: [Negative](#2-negative), [NegativeY](#3-negativey)
 
-2. When you pass smaller `r.Min.X` or bigger `r.Min.X` than `dst`'s bounds.
+2. When you pass smaller `r.Min.X` or bigger `r.Min.X` than `dst.Rect`.
 
-   As you can see, it just loops through the `r`'s (vector's) bounds and writes them directly on the `dst` image without taking care of the `dst`'s limits. This causes two things: possible crashes (min=(negative X, zero Y) or max=(higher X, highest possible Y)), or drawing the overflowed parts of the vector on the other side of the image a single pixel higher or smaller (depending on your rect's min and max.).
+   As you can see, it just loops through the `r`'s bounds and writes the right color directly on the `dst` image without taking care of the `dst`'s limits. This causes two things: possible crashes (r.Min:(negative X, zero Y) or r.Max:(higher X, highest possible Y)), or drawing the overflowed parts of the vector on the other side of the image a single pixel higher or lower (depending on your rect's Min and Max.).
 
    Test cases: [NegativeX](#4-negativex), [OverflowX](#7-overflowx)
 
-3. When you pass a higher `r.Max` than `dst`'s Max.
+3. When you pass a higher `r.Max` than `dst.Rect.Max`.
 
-   Same as the first case, but happens when we're drawing the pixels. It happens when there's an overflow of the vector, and it _should be_ skipped. But as vector doesn't take care of the `dst`'s bounds, it will try to access or write an item out of `dst.Pix`'s range. (the last 4 lines of the code above.)
+   Same as the first case, but happens when we're drawing the pixels. It happens when there's an overflow of the vector, and it _should be_ skipped. But as it doesn't take care of the `dst.Rect`, it will try to access or write an item out of `dst.Pix`'s range. (the last 4 lines of the code above.)
 
    Test cases: [Overflow](#5-overflow), [OverflowY](#6-overflowy)
 
@@ -147,7 +147,9 @@ A few issues could happen with this in different cases.
 
 ![Drawing](./ways-to-fix.png)
 
-There are three cases that cause different issues, but they all could be fixed with a theoretically easy fix without losing that much of the performance we've had. Limiting the `r`'s bounds to the `dst`'s bounds!
+There are three cases that cause different issues, but they all could be fixed with a theoretically easy fix without losing that much of the performance we've had. Which is:
+
+**Limiting the `r`'s bounds to the `dst`'s bounds!**
 
 Here's a temporarily patch I wrote:
 
@@ -199,6 +201,12 @@ func (z *Rasterizer) rasterizeDstRGBASrcUniformOpOver(dst *image.RGBA, r image.R
 }
 ```
 
-Note 1: Of course, it's not something that you would like to see in a standard library's code, but see it as one of many ways of fixing the error.
+Note 1: Of course, it's not something that you would like to see in the standard library's code, but see it as one of many ways of fixing the issue.
 
-Note 2: This code only fixes `image.RGBA` when `DrawOP` is `draw.Over`. Zero research on `image.Alpha` and `draw.Src` happened.
+Note 2: This code only fixes `image.RGBA` when `DrawOP` is `draw.Over`. I've done ZERO research on `image.Alpha` and `draw.Src`.
+
+## Thanks!
+
+Thanks for giving your time and reading my research on this issue. I hope you've found it useful.
+
+Also, a credit to @Monirzadeh for noticing it first at https://github.com/haashemi/writer/issues/9.
