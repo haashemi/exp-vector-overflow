@@ -2,6 +2,10 @@
 
 Research about unexpected panics and invalid drawings of the `x/image/vector`'s `Draw` method.
 
+### Updates:
+
+- [July 8th] Reoprted the issue. https://github.com/golang/go/issues/68335
+
 ## Table of content
 
 - [Test Cases](#test-cases)
